@@ -35,8 +35,21 @@ Para ejecutar el proyecto hace falta:
 
 ## Ejecución
 
-### Servidor
-Para arrancar el servidor hay que ejecutar en una terminal:
-
-```bash
+### Terminal 1 - Servidor
+make clean
+make
 ./server -p 8888
+
+### Terminal 2 - Cliente (reemplazar localhost si es otra máquina)
+python3 client.py -s localhost -p 8888
+
+### Ejemplo de sesión
+c> REGISTER alice
+c> REGISTER OK
+c> CONNECT alice
+c> CONNECT OK
+c> USERS
+c> CONNECTED USERS (1 users connected) OK
+alice
+c> QUIT
++++ FINISHED +++
