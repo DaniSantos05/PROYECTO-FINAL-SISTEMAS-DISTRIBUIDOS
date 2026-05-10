@@ -28,18 +28,18 @@ run-both: $(TARGET)
 	tmux send-keys -t messaging "sleep 1 && make run-client" Enter
 	tmux attach-session -t messaging
 
-# Target para compilar el servidor RPC (Parte 2.3)
+# Target para compilar el servidor RPC
 rpc-compile: rpc_service.x
 	rpcgen -S tcp rpc_service.x
 	$(CC) $(CFLAGS) -c rpc_service_svc.c -o rpc_service_svc.o
 	$(CC) $(CFLAGS) -c rpc_service_xdr.c -o rpc_service_xdr.o
 	$(CC) $(CFLAGS) rpc_service_svc.o rpc_service_xdr.o rpc_server.c -o rpc_server
 
-# Target para ejecutar el servicio RPC (Parte 2.3)
+# Target para ejecutar el servicio RPC
 run-rpc: rpc-compile
 	./rpc_server
 
-# Target para ejecutar el servicio web (Parte 2.2)
+# Target para ejecutar el servicio web
 run-web:
 	python3 web_service.py --port 5000 --host 127.0.0.1
 
