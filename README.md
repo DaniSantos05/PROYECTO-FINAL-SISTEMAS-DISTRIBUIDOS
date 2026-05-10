@@ -73,6 +73,17 @@ Para ejecutar el proyecto necesitas:
 - **Herramientas RPC** (opcional):
   - `rpcgen` (Sun RPC tools)
 
+### Nota sobre TIRPC
+
+El proyecto utiliza la implementación moderna de Sun RPC mediante TIRPC.
+Por ello, la compilación enlaza con la librería:
+
+- `-ltirpc`
+
+y utiliza las cabeceras:
+
+- `/usr/include/tirpc`
+
 ### Instalación de dependencias
 
 **En Ubuntu/Debian**:
@@ -84,7 +95,7 @@ sudo pip3 install flask requests
 
 **RPC tools (opcional)**:
 ```bash
-sudo apt-get install rpcbind sunrpc
+sudo apt-get install rpcbind libtirpc-dev
 ```
 
 ## Compilación
@@ -99,7 +110,10 @@ make clean
 make
 
 # O directamente:
-gcc -Wall -Wextra -pedantic -std=c11 -pthread server.c -o server
+gcc -Wall -Wextra -pedantic -std=c11 -pthread -g \
+    -I/usr/include/tirpc \
+    server.c rpc_service_clnt.c rpc_service_xdr.c \
+    -o server -ltirpc
 ```
 
 ### Compilar RPC
@@ -108,9 +122,14 @@ gcc -Wall -Wextra -pedantic -std=c11 -pthread server.c -o server
 make rpc-compile
 
 # O manualmente:
-rpcgen -S tcp rpc_service.x
-gcc -Wall -Wextra -pedantic -std=c11 -pthread \
-    rpc_service_svc.c rpc_service_xdr.c rpc_server.c -o rpc_server
+rpcgen -N -M -h -o rpc_service.h rpc_service.x
+rpcgen -N -M -c -o rpc_service_xdr.c rpc_service.x
+rpcgen -N -M -s tcp -o rpc_service_svc.c rpc_service.x
+
+gcc -Wall -Wextra -pedantic -std=c11 -pthread -g \
+    -I/usr/include/tirpc \
+    rpc_service_svc.c rpc_service_xdr.c rpc_server.c \
+    -o rpc_server -ltirpc
 ```
 
 ## Ejecutar el Proyecto
@@ -454,7 +473,7 @@ pip3 install flask requests
 Instalar herramientas RPC:
 ```bash
 # Ubuntu/Debian
-sudo apt-get install rpcbind sunrpc
+sudo apt-get install rpcbind libtirpc-dev
 ```
 
 ## Documentación Técnica
