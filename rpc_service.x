@@ -28,4 +28,4 @@ program MSGAUDIT_PROG {
          */
         int LOG_OPERATION(string user, string operation, string filename) = 1;
     } = 1;
-} = 0x20000001;
+} = 0x31227860;

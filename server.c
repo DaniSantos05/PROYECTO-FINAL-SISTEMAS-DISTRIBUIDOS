@@ -41,6 +41,8 @@
 // Librería para funciones como close y gethostname.
 #include <unistd.h>
 
+#include "rpc_service.h"
+
 // Longitud máxima permitida para un nombre de usuario.
 #define MAX_USERNAME_LEN 255
 
@@ -115,6 +117,52 @@ typedef struct ClientThreadArgs {
     // IP del cliente remoto que se ha conectado al servidor.
     char peer_ip[INET_ADDRSTRLEN];
 } ClientThreadArgs;
+
+
+/* ========================= AUDITORÍA RPC ========================= */
+
+/*
+ * Envía al servidor RPC una operación realizada por un usuario.
+ *
+ * El servidor principal no debe caerse si el RPC no está disponible.
+ * Por eso, si LOG_RPC_IP no está definido o la llamada falla, simplemente
+ * seguimos ejecutando el servidor normal.
+ */
+static void log_rpc_operation(const char *user, const char *operation, const char *filename) {
+    const char *rpc_ip = getenv("LOG_RPC_IP");
+    CLIENT *rpc_client = NULL;
+    enum clnt_stat rpc_status;
+    int rpc_result = 0;
+
+    char *rpc_user = (char *)(user != NULL ? user : "");
+    char *rpc_operation = (char *)(operation != NULL ? operation : "");
+    char *rpc_filename = (char *)(filename != NULL ? filename : "");
+
+    if (rpc_ip == NULL || rpc_ip[0] == '\0') {
+        return;
+    }
+
+    rpc_client = clnt_create(rpc_ip, MSGAUDIT_PROG, MSGAUDIT_VERS, "tcp");
+
+    if (rpc_client == NULL) {
+        fprintf(stderr, "s> RPC LOG FAIL %s\n", rpc_operation);
+        return;
+    }
+
+    rpc_status = log_operation_1(
+        rpc_user,
+        rpc_operation,
+        rpc_filename,
+        &rpc_result,
+        rpc_client
+    );
+
+    if (rpc_status != RPC_SUCCESS || rpc_result != 1) {
+        fprintf(stderr, "s> RPC LOG FAIL %s\n", rpc_operation);
+    }
+
+    clnt_destroy(rpc_client);
+}
 
 /* ========================= FUNCIONES AUXILIARES DE MEMORIA ========================= */
 
@@ -937,6 +985,7 @@ static void deliver_pending_messages_for_user(const char *receiver_username) {
 
                 // Mostramos por pantalla el envío real del mensaje.
                 printf("s> SEND MESSAGE %u FROM %s TO %s\n", message_id, sender_name, receiver_username);
+            log_rpc_operation(sender_name, "SEND", "");
 
                 // Forzamos la salida en consola.
                 fflush(stdout);
@@ -1029,7 +1078,7 @@ static void handle_register_request(int fd) {
 
         // Mostramos por consola el resultado.
         if (code == 0) {
-            printf("s> REGISTER %s OK\n", username);
+            printf("s> REGISTER %s OK\n", username); log_rpc_operation(username, "REGISTER", "");
         } else {
             printf("s> REGISTER %s FAIL\n", username);
         }
@@ -1120,7 +1169,7 @@ static void handle_unregister_request(int fd) {
 
         // Mostramos por consola el resultado.
         if (code == 0) {
-            printf("s> UNREGISTER %s OK\n", username);
+            printf("s> UNREGISTER %s OK\n", username); log_rpc_operation(username, "UNREGISTER", "");
         } else {
             printf("s> UNREGISTER %s FAIL\n", username);
         }
@@ -1194,7 +1243,7 @@ static void handle_connect_request(int fd, const char *peer_ip) {
         // Si la conexión fue correcta...
         if (code == 0) {
             // ...mostramos CONNECT OK.
-            printf("s> CONNECT %s OK\n", username);
+            printf("s> CONNECT %s OK\n", username); log_rpc_operation(username, "CONNECT", "");
 
             // Forzamos la salida.
             fflush(stdout);
@@ -1265,7 +1314,7 @@ static void handle_disconnect_request(int fd, const char *peer_ip) {
 
         // Mostramos por consola el resultado.
         if (code == 0) {
-            printf("s> DISCONNECT %s OK\n", username);
+            printf("s> DISCONNECT %s OK\n", username); log_rpc_operation(username, "DISCONNECT", "");
         } else {
             printf("s> DISCONNECT %s FAIL\n", username);
         }
@@ -1570,7 +1619,7 @@ static void handle_users_request(int fd, const char *peer_ip) {
             }
 
             // Mostramos por consola que la operación fue bien.
-            printf("s> CONNECTEDUSERS OK\n");
+            printf("s> CONNECTEDUSERS OK\n"); log_rpc_operation(requester, "USERS", "");
         } else {
             // Si no fue bien, mostramos FAIL.
             printf("s> CONNECTEDUSERS FAIL\n");

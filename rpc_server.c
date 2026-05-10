@@ -1,77 +1,79 @@
 /*
- * Servidor RPC para Auditoría de Mensajería 
- *
- * Este programa implementa el servidor RPC que recibe notificaciones
- * del servidor de mensajería sobre operaciones de usuarios.
- *
- * Compilación:
- *   rpcgen -S tcp rpc_service.x
- *   gcc -Wall -Wextra -std=c11 -pthread \
- *       rpc_service_svc.c rpc_service_xdr.c rpc_server.c -o rpc_server
- *
- * Ejecución:
- *   export LOG_RPC_IP=localhost
- *   ./rpc_server
+ * Servidor RPC para registrar operaciones del sistema de mensajería.
  */
 
-/* Incluimos el archivo generado por rpcgen */
 #include "rpc_service.h"
 
-/* Incluimos librerías estándar */
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <rpc/rpc.h>
 
-/**
- * Implementación del procedimiento RPC: LOG_OPERATION
+/*
+ * Procedimiento remoto LOG_OPERATION.
  *
- * Esta función se ejecuta en el servidor RPC cuando un cliente
- * (en este caso, el servidor de mensajería) quiere registrar
- * una operación de un usuario
- *
- * Parámetros:
- *   user      - Nombre del usuario
- *   operation - Nombre de la operación (REGISTER, SEND, CONNECT, etc.)
- *   filename  - Nombre del fichero (NULL para operaciones sin fichero)
- *
- * Retorna:
- *   1 si la operación fue registrada exitosamente
- *   0 si ocurrió un error
+ * Esta firma es la que espera rpcgen cuando se genera el código con:
+ * rpcgen -N -M -s tcp
  */
-int *log_operation_1_svc(char *user, char *operation, char *filename,
-                         struct svc_req *rqstp) {
-    /* Variable para almacenar el resultado */
-    static int result = 1;  /* Por defecto, éxito */
+bool_t log_operation_1_svc(
+    char *user,
+    char *operation,
+    char *filename,
+    int *result,
+    struct svc_req *rqstp
+) {
+    time_t now;
+    struct tm *timeinfo;
+    char timestamp[32];
 
-    /* Verificamos que recibimos parámetros válidos */
-    if (user == NULL || operation == NULL) {
-        fprintf(stderr, "Error: Parámetros NULL\n");
-        result = 0;
-        return &result;
+    (void)rqstp;
+
+    if (result == NULL) {
+        return FALSE;
     }
 
-    /* Obtenemos la hora actual para el timestamp */
-    time_t now = time(NULL);
-    struct tm *timeinfo = localtime(&now);
-    char timestamp[32];
+    *result = 0;
+
+    if (user == NULL || operation == NULL) {
+        fprintf(stderr, "RPC LOG ERROR: invalid parameters\n");
+        return TRUE;
+    }
+
+    now = time(NULL);
+    timeinfo = localtime(&now);
+
+    if (timeinfo == NULL) {
+        fprintf(stderr, "RPC LOG ERROR: could not get current time\n");
+        return TRUE;
+    }
+
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo);
 
-    /* Formateamos y mostramos el registro en pantalla */
-    printf("[%s] %s %s", timestamp, user, operation);
+    printf("[%s] USER=%s OPERATION=%s", timestamp, user, operation);
 
-    /* Si hay fichero adjunto, también lo mostramos */
     if (filename != NULL && strlen(filename) > 0) {
-        printf(" %s", filename);
+        printf(" FILE=%s", filename);
     }
 
-    /* Completamos la línea */
     printf("\n");
-
-    /* Forzamos la salida para asegurar que se ve inmediatamente */
     fflush(stdout);
 
-    /* Retornamos 1 (éxito) */
-    return &result;
+    *result = 1;
+    return TRUE;
+}
+
+/*
+ * rpcgen espera esta función para liberar resultados del programa RPC.
+ * En este caso el resultado es un int, así que realmente no hay memoria dinámica
+ * que liberar, pero la función debe existir para que el enlace no falle.
+ */
+int msgaudit_prog_1_freeresult(
+    SVCXPRT *transp,
+    xdrproc_t xdr_result,
+    caddr_t result
+) {
+    (void)transp;
+    (void)xdr_result;
+    (void)result;
+
+    return TRUE;
 }

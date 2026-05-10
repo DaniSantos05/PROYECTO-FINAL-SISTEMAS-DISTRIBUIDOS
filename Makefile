@@ -1,67 +1,49 @@
-# Compilador de C y flags de compilación
+.RECIPEPREFIX := >
+
 CC = gcc
-CFLAGS = -Wall -Wextra -pedantic -std=c11 -pthread -g
+CFLAGS = -Wall -Wextra -pedantic -std=c11 -pthread -g -I/usr/include/tirpc
+RPC_CFLAGS = -Wall -Wextra -pedantic -std=c11 -pthread -g -I/usr/include/tirpc -Wno-cast-function-type -Wno-unused-parameter
+RPC_LIBS = -ltirpc
+
 TARGET = server
 SRC = server.c
 
-# Por defecto, compilamos el servidor
+RPC_X = rpc_service.x
+RPC_SERVER = rpc_server
+
+RPC_ALL_GEN = rpc_service.h rpc_service_clnt.c rpc_service_svc.c rpc_service_xdr.c
+
 all: $(TARGET)
 
-# Regla para compilar el servidor
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+$(TARGET): $(SRC) $(RPC_X)
+>rm -f rpc_service.h rpc_service_clnt.c rpc_service_xdr.c server_tmp
+>rpcgen -N -M -h -o rpc_service.h $(RPC_X)
+>rpcgen -N -M -c -o rpc_service_xdr.c $(RPC_X)
+>rpcgen -N -M -l -o rpc_service_clnt.c $(RPC_X)
+>$(CC) $(CFLAGS) $(SRC) rpc_service_clnt.c rpc_service_xdr.c -o server_tmp $(RPC_LIBS)
+>mv -f server_tmp $(TARGET)
 
-# Target para ejecutar el servidor en puerto 8888
 run-server: $(TARGET)
-	./$(TARGET) -p 8888
+>./$(TARGET) -p 8888
 
-# Target para ejecutar el cliente con servidor local
 run-client:
-	python3 client.py -s localhost -p 8888
+>python3 client.py -s localhost -p 8888
 
-# Target para lanzar servidor y cliente simultáneamente (requiere tmux)
-run-both: $(TARGET)
-	@echo "Asegúrate de tener tmux instalado"
-	tmux new-session -d -s messaging -x 180 -y 50
-	tmux send-keys -t messaging "make run-server" Enter
-	tmux split-window -t messaging -h
-	tmux send-keys -t messaging "sleep 1 && make run-client" Enter
-	tmux attach-session -t messaging
+rpc-compile: $(RPC_X)
+>rm -f $(RPC_SERVER) rpc_server_tmp rpc_service.h rpc_service_svc.c rpc_service_xdr.c rpc_service_clnt.c rpc_service_svc.o rpc_service_xdr.o
+>rpcgen -N -M -h -o rpc_service.h $(RPC_X)
+>rpcgen -N -M -c -o rpc_service_xdr.c $(RPC_X)
+>rpcgen -N -M -s tcp -o rpc_service_svc.c $(RPC_X)
+>$(CC) $(RPC_CFLAGS) -c rpc_service_svc.c -o rpc_service_svc.o
+>$(CC) $(RPC_CFLAGS) -c rpc_service_xdr.c -o rpc_service_xdr.o
+>$(CC) $(CFLAGS) rpc_service_svc.o rpc_service_xdr.o rpc_server.c -o rpc_server_tmp $(RPC_LIBS)
+>mv -f rpc_server_tmp $(RPC_SERVER)
 
-# Target para compilar el servidor RPC
-rpc-compile: rpc_service.x
-	rpcgen -S tcp rpc_service.x
-	$(CC) $(CFLAGS) -c rpc_service_svc.c -o rpc_service_svc.o
-	$(CC) $(CFLAGS) -c rpc_service_xdr.c -o rpc_service_xdr.o
-	$(CC) $(CFLAGS) rpc_service_svc.o rpc_service_xdr.o rpc_server.c -o rpc_server
-
-# Target para ejecutar el servicio RPC
 run-rpc: rpc-compile
-	./rpc_server
+>./$(RPC_SERVER)
 
-# Target para ejecutar el servicio web
 run-web:
-	python3 web_service.py --port 5000 --host 127.0.0.1
+>python3 web_service.py --host 127.0.0.1 --port 5000
 
-# Target para limpiar archivos compilados
 clean:
-	rm -f $(TARGET) rpc_server *.o rpc_service_svc.c rpc_service_xdr.c rpc_service_svc.h rpc_service_clnt.c
-
-# Target para ayuda
-help:
-	@echo "================================"
-	@echo "Targets disponibles:"
-	@echo "================================"
-	@echo "  make                - Compila el servidor (Parte 1)"
-	@echo "  make run-server     - Ejecuta el servidor en puerto 8888"
-	@echo "  make run-client     - Ejecuta el cliente (requiere servidor activo)"
-	@echo "  make run-both       - Ejecuta servidor y cliente en tmux"
-	@echo "  make rpc-compile    - Compila servidor RPC (Parte 2.3)"
-	@echo "  make run-rpc        - Ejecuta servidor RPC"
-	@echo "  make run-web        - Ejecuta servicio web (Parte 2.2)"
-	@echo "  make clean          - Elimina archivos compilados"
-	@echo "  make help           - Muestra esta ayuda"
-	@echo "================================"
-
-# Evitar que make intente compilar archivos llamados como estos targets
-.PHONY: all run-server run-client run-both rpc-compile run-rpc run-web clean help
+>rm -f $(TARGET) $(RPC_SERVER) server_tmp rpc_server_tmp *.o $(RPC_ALL_GEN)

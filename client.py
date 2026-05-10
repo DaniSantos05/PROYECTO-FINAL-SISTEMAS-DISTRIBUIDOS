@@ -773,71 +773,57 @@ class client:
     # Método para enviar un mensaje con fichero adjunto (Parte 2.1).
     @staticmethod
     def sendAttach(user, file_name, message):
-        # Si no hay usuario conectado, no se puede enviar ningún mensaje.
+        # Si no hay usuario conectado, no se puede enviar ningún adjunto.
         if client._current_user is None:
-            client._safe_print("c> SENDATTACH FAIL")
+            client._safe_print("c> SENDATTACH FAIL (no current user)")
             return client.RC.ERROR
 
-        # Validar que el fichero existe (Parte 2.1).
+        # Comprobamos que el fichero existe en la máquina donde corre este cliente.
         if not os.path.exists(file_name):
-            client._safe_print("c> SENDATTACH FAIL")
+            client._safe_print(f"c> SENDATTACH FAIL (file not found: {file_name})")
             return client.RC.ERROR
 
-        # Normalizar mensaje si está disponible el servicio web (Parte 2.2)
+        # Normalizamos el mensaje usando el servicio web si está disponible.
         message = client._normalize_message(message)
 
-        # Comprobamos que el mensaje cumple el tamaño máximo del protocolo.
+        # Comprobamos el tamaño máximo permitido por el protocolo.
         if not client._message_fits_protocol(message):
-            client._safe_print("c> SENDATTACH FAIL")
+            client._safe_print("c> SENDATTACH FAIL (message too large)")
             return client.RC.ERROR
 
         try:
-            # Abrimos conexión con el servidor.
+            # Abrimos conexión con el servidor principal.
             with client._connect_to_server() as sock:
-                # Enviamos la operación SENDATTACH (Parte 2.1).
+                # Enviamos la operación SENDATTACH.
                 client._send_string(sock, "SENDATTACH")
 
-                # Enviamos el nombre del remitente.
+                # Enviamos remitente, destinatario, mensaje y nombre del fichero.
                 client._send_string(sock, client._current_user)
-
-                # Enviamos el nombre del destinatario.
                 client._send_string(sock, user)
-
-                # Enviamos el contenido del mensaje.
                 client._send_string(sock, message)
-
-                # Enviamos el nombre del fichero adjunto (Parte 2.1).
                 client._send_string(sock, file_name)
 
                 # Recibimos el código de respuesta del servidor.
                 code = client._recv_code(sock)
 
-                # Si el envío fue aceptado, el servidor también manda el ID del mensaje.
+                # Si el servidor aceptó el mensaje, también devuelve el ID.
                 message_id = client._recv_string(sock) if code == 0 else None
 
-        # Si algo falla en la comunicación...
-        except Exception:
-            # ...mostramos error.
-            client._safe_print("c> SENDATTACH FAIL")
-
-            # Devolvemos error general.
+        except Exception as e:
+            client._safe_print(f"c> SENDATTACH FAIL (exception: {e})")
             return client.RC.ERROR
 
-        # Si el código es 0, el servidor aceptó el mensaje.
         if code == 0:
             client._safe_print(f"c> SENDATTACH OK - MESSAGE {message_id}")
             return client.RC.OK
 
-        # Si el código es 1, el destinatario no existe.
         if code == 1:
             client._safe_print("c> SENDATTACH FAIL, USER DOES NOT EXIST")
             return client.RC.USER_ERROR
 
-        # Cualquier otro caso es error general.
-        client._safe_print("c> SENDATTACH FAIL")
+        client._safe_print(f"c> SENDATTACH FAIL (server code: {code})")
         return client.RC.ERROR
 
-    # Método para descargar fichero de otro usuario (Parte 2.1).
     @staticmethod
     def getFile(user, remote_filename, local_filename):
         # Si no estamos conectados
