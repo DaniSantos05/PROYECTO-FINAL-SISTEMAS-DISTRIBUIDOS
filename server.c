@@ -41,7 +41,6 @@
 // Librería para funciones como close y gethostname.
 #include <unistd.h>
 
-
 // Longitud máxima permitida para un nombre de usuario.
 #define MAX_USERNAME_LEN 255
 
@@ -50,7 +49,6 @@
 
 // Número máximo de conexiones pendientes que aceptará listen.
 #define LISTEN_BACKLOG 50
-
 
 // Esta estructura representa un mensaje pendiente de entrega.
 typedef struct Message {
@@ -63,10 +61,12 @@ typedef struct Message {
     // Texto del mensaje.
     char *text;
 
+    // Nombre del fichero adjunto (NULL si no hay fichero - Parte 2.1).
+    char *filename;
+
     // Puntero al siguiente mensaje pendiente de la cola.
     struct Message *next;
 } Message;
-
 
 // Esta estructura representa a un usuario registrado en el sistema.
 typedef struct User {
@@ -95,7 +95,6 @@ typedef struct User {
     struct User *next;
 } User;
 
-
 // Lista global de usuarios registrados.
 static User *g_users = NULL;
 
@@ -108,7 +107,6 @@ static volatile sig_atomic_t g_running = 1;
 // Descriptor del socket principal del servidor.
 static int g_server_socket = -1;
 
-
 // Esta estructura auxiliar se usa para pasar datos al hilo que atiende a cada cliente.
 typedef struct ClientThreadArgs {
     // Descriptor del socket del cliente aceptado por el servidor.
@@ -118,9 +116,7 @@ typedef struct ClientThreadArgs {
     char peer_ip[INET_ADDRSTRLEN];
 } ClientThreadArgs;
 
-
 /* ========================= FUNCIONES AUXILIARES DE MEMORIA ========================= */
-
 
 // Esta función crea una copia dinámica de una cadena.
 static char *dup_string(const char *src) {
@@ -146,7 +142,6 @@ static char *dup_string(const char *src) {
     return copy;
 }
 
-
 // Esta función libera toda la memoria asociada a un mensaje.
 static void free_message(Message *msg) {
     // Solo liberamos si el puntero es válido.
@@ -157,11 +152,13 @@ static void free_message(Message *msg) {
         // Liberamos el texto del mensaje.
         free(msg->text);
 
+        // Liberamos el nombre del fichero (Parte 2.1).
+        free(msg->filename);
+
         // Liberamos la propia estructura del mensaje.
         free(msg);
     }
 }
-
 
 // Esta función libera todos los mensajes de una lista enlazada.
 static void free_all_messages(Message *head) {
@@ -181,7 +178,6 @@ static void free_all_messages(Message *head) {
     }
 }
 
-
 // Esta función libera toda la memoria asociada a un usuario.
 static void free_user(User *user) {
     // Solo actuamos si el puntero es válido.
@@ -197,9 +193,7 @@ static void free_user(User *user) {
     }
 }
 
-
 /* ========================= FUNCIONES AUXILIARES DE RED ========================= */
-
 
 // Esta función envía exactamente "length" bytes por el socket.
 static ssize_t send_all(int fd, const void *buffer, size_t length) {
@@ -228,7 +222,6 @@ static ssize_t send_all(int fd, const void *buffer, size_t length) {
     return (ssize_t)sent_total;
 }
 
-
 // Esta función envía un código de respuesta de 1 byte.
 static int send_code(int fd, uint8_t code) {
     // Si se consiguió enviar exactamente 1 byte...
@@ -240,7 +233,6 @@ static int send_code(int fd, uint8_t code) {
     // Si no, devolvemos error.
     return -1;
 }
-
 
 // Esta función envía una cadena terminada en '\0'.
 static int send_cstring(int fd, const char *text) {
@@ -262,7 +254,6 @@ static int send_cstring(int fd, const char *text) {
     // Si no, devolvemos error.
     return -1;
 }
-
 
 // Esta función recibe una cadena terminada en '\0' desde un socket.
 static char *recv_cstring(int fd) {
@@ -333,7 +324,6 @@ static char *recv_cstring(int fd) {
     }
 }
 
-
 // Esta función se conecta al hilo de escucha de un cliente concreto.
 static int connect_to_client_listener(const char *ip, int port) {
     // Descriptor del socket que usaremos.
@@ -382,9 +372,7 @@ static int connect_to_client_listener(const char *ip, int port) {
     return fd;
 }
 
-
 /* ========================= FUNCIONES AUXILIARES DE USUARIOS ========================= */
-
 
 // Esta función busca un usuario por nombre.
 // Ojo: se asume que el mutex global ya está bloqueado.
@@ -407,7 +395,6 @@ static User *find_user_locked(const char *username) {
     return NULL;
 }
 
-
 // Esta función calcula el siguiente identificador de mensaje para un remitente.
 // Ojo: se asume que el mutex global ya está bloqueado.
 static unsigned int next_message_id_locked(User *sender) {
@@ -424,10 +411,12 @@ static unsigned int next_message_id_locked(User *sender) {
     return sender->last_message_id;
 }
 
-
 // Esta función añade un mensaje a la cola de pendientes de un receptor.
 // Ojo: se asume que el mutex global ya está bloqueado.
-static int append_pending_message_locked(User *receiver, const char *sender, unsigned int id, const char *text) {
+// Parte 2.1: Ahora también acepta filename.
+static int append_pending_message_locked(User *receiver, const char *sender, 
+                                         unsigned int id, const char *text,
+                                         const char *filename) {
     // Reservamos memoria para el nuevo mensaje.
     Message *msg = (Message *)malloc(sizeof(Message));
 
@@ -442,13 +431,16 @@ static int append_pending_message_locked(User *receiver, const char *sender, uns
     // Copiamos dinámicamente el texto del mensaje.
     msg->text = dup_string(text);
 
+    // Copiamos dinámicamente el nombre del fichero (puede ser NULL).
+    msg->filename = dup_string(filename);
+
     // Guardamos el identificador.
     msg->id = id;
 
     // Inicialmente no apunta a ningún siguiente.
     msg->next = NULL;
 
-    // Si alguna de las copias falló...
+    // Si alguna de las copias esenciales falló...
     if (msg->sender == NULL || msg->text == NULL) {
         // ...liberamos todo lo reservado...
         free_message(msg);
@@ -475,7 +467,6 @@ static int append_pending_message_locked(User *receiver, const char *sender, uns
     // Devolvemos éxito.
     return 0;
 }
-
 
 // Esta función elimina de la cola un mensaje ya entregado.
 // Ojo: se asume que el mutex global ya está bloqueado.
@@ -518,7 +509,6 @@ static void remove_pending_message_locked(User *receiver, const char *sender, un
     }
 }
 
-
 // Esta función cuenta cuántos usuarios hay conectados.
 // Ojo: se asume que el mutex global ya está bloqueado.
 static int count_connected_users_locked(void) {
@@ -544,9 +534,9 @@ static int count_connected_users_locked(void) {
     return count;
 }
 
-
-// Esta función crea una copia dinámica con los nombres de los usuarios conectados.
+// Esta función crea una copia dinámica con los nombres y datos de los usuarios conectados.
 // Ojo: se asume que el mutex global ya está bloqueado.
+// Parte 2.1: Ahora devuelve formato "usuario::IP::puerto"
 static char **copy_connected_users_locked(int *count_out) {
     // Primero contamos cuántos conectados hay.
     int count = count_connected_users_locked();
@@ -575,8 +565,13 @@ static char **copy_connected_users_locked(int *count_out) {
         while (current != NULL) {
             // Si el usuario actual está conectado...
             if (current->connected) {
-                // ...duplicamos su nombre y lo guardamos.
-                list[index] = dup_string(current->username);
+                // Construir "usuario::IP::puerto" (Parte 2.1)
+                char user_info[512];
+                snprintf(user_info, sizeof(user_info), "%s::%s::%d",
+                         current->username, current->ip, current->port);
+
+                // Duplicamos la cadena construida y la guardamos.
+                list[index] = dup_string(user_info);
 
                 // Si falló la copia de ese nombre...
                 if (list[index] == NULL) {
@@ -616,7 +611,6 @@ static char **copy_connected_users_locked(int *count_out) {
     return list;
 }
 
-
 // Esta función libera un array de cadenas dinámicas.
 static void free_string_array(char **list, int count) {
     // Variable de bucle.
@@ -636,12 +630,13 @@ static void free_string_array(char **list, int count) {
     free(list);
 }
 
-
 /* ========================= ENVÍO ASÍNCRONO A CLIENTES ========================= */
 
-
 // Esta función envía un mensaje normal al hilo de escucha de un cliente.
-static int send_message_to_listener(const char *ip, int port, const char *sender, unsigned int id, const char *text) {
+// Parte 2.1: Ahora opcionalmente envía fichero también.
+static int send_message_to_listener(const char *ip, int port, const char *sender, 
+                                   unsigned int id, const char *text,
+                                   const char *filename) {
     // Socket conectado con el cliente destino.
     int fd = -1;
 
@@ -659,8 +654,13 @@ static int send_message_to_listener(const char *ip, int port, const char *sender
         return -1;
     }
 
+    // Decidir si es SEND MESSAGE o SEND MESSAGE ATTACH (Parte 2.1)
+    const char *operation = (filename != NULL && strlen(filename) > 0) 
+                            ? "SEND MESSAGE ATTACH" 
+                            : "SEND MESSAGE";
+
     // Enviamos la operación y sus campos según el protocolo.
-    if (send_cstring(fd, "SEND MESSAGE") != 0 ||
+    if (send_cstring(fd, operation) != 0 ||
         send_cstring(fd, sender) != 0 ||
         send_cstring(fd, id_text) != 0 ||
         send_cstring(fd, text) != 0) {
@@ -671,13 +671,20 @@ static int send_message_to_listener(const char *ip, int port, const char *sender
         return -1;
     }
 
+    // Si es SEND MESSAGE ATTACH, enviar también el fichero (Parte 2.1)
+    if (filename != NULL && strlen(filename) > 0) {
+        if (send_cstring(fd, filename) != 0) {
+            close(fd);
+            return -1;
+        }
+    }
+
     // Cerramos la conexión con el cliente.
     close(fd);
 
     // Devolvemos éxito.
     return 0;
 }
-
 
 // Esta función envía al remitente el ACK de que su mensaje se ha entregado.
 static int send_ack_to_listener(const char *ip, int port, unsigned int id) {
@@ -715,6 +722,43 @@ static int send_ack_to_listener(const char *ip, int port, unsigned int id) {
     return 0;
 }
 
+// Esta función envía al remitente el ACK con el nombre del fichero (Parte 2.1).
+static int send_ack_with_filename(const char *ip, int port, unsigned int id,
+                                  const char *filename) {
+    // Socket conectado con el remitente.
+    int fd = -1;
+
+    // Cadena temporal para el identificador.
+    char id_text[32];
+
+    // Convertimos el ID a texto.
+    snprintf(id_text, sizeof(id_text), "%u", id);
+
+    // Intentamos conectar con el hilo de escucha del remitente.
+    fd = connect_to_client_listener(ip, port);
+
+    // Si no se pudo conectar, devolvemos error.
+    if (fd < 0) {
+        return -1;
+    }
+
+    // Enviamos la operación SEND MESS ATTACH ACK y los datos.
+    if (send_cstring(fd, "SEND MESS ATTACH ACK") != 0 ||
+        send_cstring(fd, id_text) != 0 ||
+        send_cstring(fd, filename) != 0) {
+        // Si algo falla, cerramos el socket...
+        close(fd);
+
+        // ...y devolvemos error.
+        return -1;
+    }
+
+    // Cerramos la conexión.
+    close(fd);
+
+    // Devolvemos éxito.
+    return 0;
+}
 
 // Esta función marca a un usuario como desconectado si falla la entrega.
 static void mark_user_disconnected_by_name(const char *username) {
@@ -742,7 +786,6 @@ static void mark_user_disconnected_by_name(const char *username) {
     pthread_mutex_unlock(&g_users_mutex);
 }
 
-
 // Esta función intenta entregar todos los mensajes pendientes de un usuario.
 static void deliver_pending_messages_for_user(const char *receiver_username) {
     // Esta variable controla si seguimos intentando entregar más mensajes.
@@ -761,6 +804,9 @@ static void deliver_pending_messages_for_user(const char *receiver_username) {
 
         // Aquí guardaremos una copia local del texto del mensaje.
         char *message_text = NULL;
+
+        // Aquí guardaremos una copia local del nombre del fichero (Parte 2.1).
+        char *message_filename = NULL;
 
         // Aquí guardaremos el ID del mensaje.
         unsigned int message_id = 0;
@@ -820,6 +866,9 @@ static void deliver_pending_messages_for_user(const char *receiver_username) {
                 // Hacemos una copia local del texto.
                 message_text = dup_string(msg->text);
 
+                // Hacemos una copia local del fichero (Parte 2.1).
+                message_filename = dup_string(msg->filename);
+
                 // Si el remitente existe y sigue conectado...
                 if (sender != NULL && sender->connected) {
                     // ...marcamos que podremos enviarle ACK.
@@ -848,15 +897,25 @@ static void deliver_pending_messages_for_user(const char *receiver_username) {
             // Liberamos la copia local del texto por si existe.
             free(message_text);
 
+            // Liberamos la copia del fichero (Parte 2.1).
+            free(message_filename);
+
             // Y dejamos de trabajar.
             keep_working = 0;
         } else {
             // Si conseguimos enviar el mensaje al receptor...
-            if (send_message_to_listener(receiver_ip, receiver_port, sender_name, message_id, message_text) == 0) {
+            if (send_message_to_listener(receiver_ip, receiver_port, sender_name, 
+                                        message_id, message_text, message_filename) == 0) {
                 // ...y el remitente sigue conectado...
                 if (sender_is_connected) {
-                    // ...le enviamos el ACK de entrega.
-                    send_ack_to_listener(sender_ip, sender_port, message_id);
+                    // Si hay fichero, usar ACK con fichero (Parte 2.1)
+                    if (message_filename != NULL && strlen(message_filename) > 0) {
+                        // ...le enviamos el ACK de entrega con fichero.
+                        send_ack_with_filename(sender_ip, sender_port, message_id, message_filename);
+                    } else {
+                        // ...le enviamos el ACK de entrega normal.
+                        send_ack_to_listener(sender_ip, sender_port, message_id);
+                    }
                 }
 
                 // Volvemos a bloquear para eliminar el mensaje ya entregado.
@@ -891,13 +950,14 @@ static void deliver_pending_messages_for_user(const char *receiver_username) {
 
             // Liberamos la copia local del texto.
             free(message_text);
+
+            // Liberamos la copia del fichero (Parte 2.1).
+            free(message_filename);
         }
     }
 }
 
-
 /* ========================= GESTIÓN DE PETICIONES ========================= */
-
 
 // Esta función atiende una petición REGISTER.
 static void handle_register_request(int fd) {
@@ -981,7 +1041,6 @@ static void handle_register_request(int fd) {
     // Liberamos la memoria del nombre recibido.
     free(username);
 }
-
 
 // Esta función atiende una petición UNREGISTER.
 static void handle_unregister_request(int fd) {
@@ -1074,7 +1133,6 @@ static void handle_unregister_request(int fd) {
     free(username);
 }
 
-
 // Esta función atiende una petición CONNECT.
 static void handle_connect_request(int fd, const char *peer_ip) {
     // Leemos el nombre del usuario.
@@ -1157,7 +1215,6 @@ static void handle_connect_request(int fd, const char *peer_ip) {
     free(port_text);
 }
 
-
 // Esta función atiende una petición DISCONNECT.
 static void handle_disconnect_request(int fd, const char *peer_ip) {
     // Leemos el nombre del usuario a desconectar.
@@ -1221,7 +1278,6 @@ static void handle_disconnect_request(int fd, const char *peer_ip) {
     free(username);
 }
 
-
 // Esta función atiende una petición SEND.
 static void handle_send_request(int fd, const char *peer_ip) {
     // Leemos el nombre del remitente.
@@ -1274,7 +1330,9 @@ static void handle_send_request(int fd, const char *peer_ip) {
                     message_id = next_message_id_locked(sender);
 
                     // Intentamos guardar el mensaje en la cola del destinatario.
-                    if (append_pending_message_locked(receiver, sender_name, message_id, message_text) == 0) {
+                    // Paso NULL como filename (Parte 2.1).
+                    if (append_pending_message_locked(receiver, sender_name, message_id, 
+                                                      message_text, NULL) == 0) {
                         // Guardamos si el destinatario estaba conectado.
                         receiver_connected = receiver->connected;
 
@@ -1311,11 +1369,6 @@ static void handle_send_request(int fd, const char *peer_ip) {
             // ...y el destinatario estaba conectado...
             if (receiver_connected) {
                 // ...intentamos entregarlo inmediatamente.
-                //
-                // OJO:
-                // Aquí NO imprimimos "SEND MESSAGE ..." para no duplicarlo.
-                // La impresión correcta se hace dentro de deliver_pending_messages_for_user()
-                // cuando el mensaje se entrega de verdad.
                 deliver_pending_messages_for_user(receiver_name);
             } else {
                 // Si el destinatario no estaba conectado, dejamos el mensaje almacenado.
@@ -1333,6 +1386,118 @@ static void handle_send_request(int fd, const char *peer_ip) {
     free(message_text);
 }
 
+// Esta función atiende una petición SENDATTACH (Parte 2.1).
+static void handle_sendattach_request(int fd, const char *peer_ip) {
+    // Leemos el nombre del remitente.
+    char *sender_name = recv_cstring(fd);
+
+    // Leemos el nombre del destinatario.
+    char *receiver_name = recv_cstring(fd);
+
+    // Leemos el texto del mensaje.
+    char *message_text = recv_cstring(fd);
+
+    // Leemos el nombre del fichero adjunto (Parte 2.1).
+    char *filename = recv_cstring(fd);
+
+    // Por defecto asumimos error general.
+    uint8_t code = 2;
+
+    // Aquí guardaremos el identificador asignado al mensaje.
+    unsigned int message_id = 0;
+
+    // Esta variable indica si el receptor estaba conectado.
+    int receiver_connected = 0;
+
+    // Solo seguimos si se recibieron bien las cuatro cadenas.
+    if (sender_name != NULL && receiver_name != NULL && 
+        message_text != NULL && filename != NULL) {
+        // Calculamos el tamaño del mensaje contando también el '\0'.
+        size_t message_size = strlen(message_text) + 1;
+
+        // Si el mensaje se pasa del tamaño máximo permitido...
+        if (message_size > MAX_MESSAGE_BYTES) {
+            // ...mantenemos error general.
+            code = 2;
+        } else {
+            // Bloqueamos el mutex global.
+            pthread_mutex_lock(&g_users_mutex);
+
+            {
+                // Buscamos al remitente.
+                User *sender = find_user_locked(sender_name);
+
+                // Buscamos al destinatario.
+                User *receiver = find_user_locked(receiver_name);
+
+                // Si alguno de los dos no existe...
+                if (sender == NULL || receiver == NULL) {
+                    // ...devolvemos código 1.
+                    code = 1;
+                } else if (!sender->connected || strcmp(sender->ip, peer_ip) != 0) {
+                    // Si el remitente no estaba conectado o la IP no coincide, error general.
+                    code = 2;
+                } else {
+                    // Si todo está bien, obtenemos el siguiente ID para este remitente.
+                    message_id = next_message_id_locked(sender);
+
+                    // Intentamos guardar el mensaje en la cola del destinatario.
+                    // Ahora con filename (Parte 2.1).
+                    if (append_pending_message_locked(receiver, sender_name, message_id, 
+                                                      message_text, filename) == 0) {
+                        // Guardamos si el destinatario estaba conectado.
+                        receiver_connected = receiver->connected;
+
+                        // Marcamos éxito.
+                        code = 0;
+                    } else {
+                        // Si no se pudo guardar, dejamos error general.
+                        code = 2;
+                    }
+                }
+            }
+
+            // Desbloqueamos el mutex.
+            pthread_mutex_unlock(&g_users_mutex);
+        }
+
+        // Enviamos el código de respuesta al cliente.
+        send_code(fd, code);
+
+        // Si todo fue bien...
+        if (code == 0) {
+            // ...convertimos el ID a texto...
+            char id_text[32];
+
+            // ...lo guardamos en la cadena temporal...
+            snprintf(id_text, sizeof(id_text), "%u", message_id);
+
+            // ...y se lo enviamos al remitente.
+            send_cstring(fd, id_text);
+        }
+
+        // Si el mensaje fue aceptado...
+        if (code == 0) {
+            // ...y el destinatario estaba conectado...
+            if (receiver_connected) {
+                // ...intentamos entregarlo inmediatamente.
+                deliver_pending_messages_for_user(receiver_name);
+            } else {
+                // Si el destinatario no estaba conectado, dejamos el mensaje almacenado.
+                printf("s> MESSAGE %u FROM %s TO %s STORED\n", message_id, sender_name, receiver_name);
+
+                // Forzamos la salida en consola.
+                fflush(stdout);
+            }
+        }
+    }
+
+    // Liberamos las cadenas recibidas.
+    free(sender_name);
+    free(receiver_name);
+    free(message_text);
+    free(filename);
+}
 
 // Esta función atiende una petición USERS.
 static void handle_users_request(int fd, const char *peer_ip) {
@@ -1399,7 +1564,7 @@ static void handle_users_request(int fd, const char *peer_ip) {
             // Enviamos primero la cantidad de usuarios conectados.
             send_cstring(fd, count_text);
 
-            // Luego enviamos los nombres, uno por uno.
+            // Luego enviamos los datos completos formato "user::IP::puerto" (Parte 2.1).
             for (i = 0; i < count; i++) {
                 send_cstring(fd, connected_users[i]);
             }
@@ -1421,7 +1586,6 @@ static void handle_users_request(int fd, const char *peer_ip) {
     // Liberamos el nombre del solicitante.
     free(requester);
 }
-
 
 // Esta es la función principal del hilo que atiende a un cliente.
 static void *client_thread_main(void *arg) {
@@ -1483,6 +1647,11 @@ static void *client_thread_main(void *arg) {
             // ...atendemos SEND.
             handle_send_request(fd, peer_ip);
 
+        // Si la operación es SENDATTACH (Parte 2.1)...
+        } else if (strcmp(operation, "SENDATTACH") == 0) {
+            // ...atendemos SENDATTACH.
+            handle_sendattach_request(fd, peer_ip);
+
         // Si la operación es USERS...
         } else if (strcmp(operation, "USERS") == 0) {
             // ...atendemos USERS.
@@ -1500,9 +1669,7 @@ static void *client_thread_main(void *arg) {
     pthread_exit(NULL);
 }
 
-
 /* ========================= SEÑALES Y ARRANQUE ========================= */
-
 
 // Esta función maneja Ctrl+C.
 static void handle_sigint(int signum) {
@@ -1521,7 +1688,6 @@ static void handle_sigint(int signum) {
         g_server_socket = -1;
     }
 }
-
 
 // Esta función intenta obtener una IP local del servidor en formato texto.
 static void get_local_ip_string(char *buffer, size_t size) {
@@ -1581,7 +1747,6 @@ static void get_local_ip_string(char *buffer, size_t size) {
     }
 }
 
-
 // Esta función extrae el puerto a partir de los argumentos de la línea de comandos.
 static int parse_port_from_args(int argc, char *argv[]) {
     // Inicializamos el puerto a un valor inválido.
@@ -1608,7 +1773,6 @@ static int parse_port_from_args(int argc, char *argv[]) {
     // Devolvemos el puerto encontrado, o -1 si no había.
     return port;
 }
-
 
 // Esta es la función principal del servidor.
 int main(int argc, char *argv[]) {

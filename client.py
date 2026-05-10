@@ -17,6 +17,17 @@ import threading
 # es decir, a los argumentos de la línea de comandos.
 import sys
 
+# Importamos os para verificar existencia de ficheros (Parte 2.1).
+import os
+
+# Importamos re para procesamiento de expresiones regulares en comandos (Parte 2.1).
+import re
+
+# Importamos requests para comunicación con servicio web (Parte 2.2).
+try:
+    import requests
+except ImportError:
+    requests = None
 
 # Definimos la clase principal del cliente.
 class client:
@@ -56,6 +67,12 @@ class client:
     # Este candado evita que dos hilos escriban a la vez en la consola
     # y se mezclen los mensajes.
     _print_lock = threading.Lock()
+
+    # Cache de usuarios conectados con IP y puerto (Parte 2.1).
+    _connected_users_cache = {}
+
+    # URL del servicio web de normalización (Parte 2.2).
+    _web_service_url = "http://localhost:5000"
 
     # Definimos un método estático para imprimir de forma segura.
     @staticmethod
@@ -154,6 +171,31 @@ class client:
         # El mensaje debe ocupar como mucho 256 bytes contando también el '\0' final.
         return len(message.encode("utf-8") + b"\0") <= 256
 
+    # Método auxiliar para normalizar mensajes con servicio web (Parte 2.2).
+    @staticmethod
+    def _normalize_message(message):
+        # Si no está disponible el módulo requests, devolver sin cambios.
+        if requests is None:
+            return message
+
+        try:
+            # Enviar al servicio web
+            response = requests.post(
+                f"{client._web_service_url}/normalize",
+                json={"message": message},
+                timeout=2
+            )
+            
+            # Si la respuesta es OK
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("normalized", message)
+        except Exception:
+            # Si hay error, devolver mensaje sin normalizar
+            pass
+
+        return message
+
     # Definimos el bucle que ejecutará el hilo de escucha.
     @staticmethod
     def _listener_loop():
@@ -205,6 +247,32 @@ class client:
                         # Mostramos END para cerrar el bloque visual del mensaje.
                         client._safe_print("END")
 
+                    # Si el servidor nos manda un mensaje con fichero adjunto (Parte 2.1)...
+                    elif operation == "SEND MESSAGE ATTACH":
+                        # Leemos el nombre del remitente.
+                        sender = client._recv_string(conn)
+
+                        # Leemos el identificador del mensaje.
+                        message_id = client._recv_string(conn)
+
+                        # Leemos el texto del mensaje.
+                        message = client._recv_string(conn, max_size=4096)
+
+                        # Leemos el nombre del fichero adjunto (Parte 2.1).
+                        filename = client._recv_string(conn)
+
+                        # Mostramos por pantalla la cabecera.
+                        client._safe_print(f"s> MESSAGE {message_id} FROM {sender}")
+
+                        # Mostramos el contenido del mensaje.
+                        client._safe_print(message)
+
+                        # Mostramos END.
+                        client._safe_print("END")
+
+                        # Mostramos el fichero adjunto (Parte 2.1).
+                        client._safe_print(f"FILE {filename}")
+
                     # Si el servidor nos manda la confirmación de entrega de un mensaje nuestro...
                     elif operation == "SEND MESS ACK":
                         # Leemos el identificador del mensaje entregado.
@@ -212,6 +280,51 @@ class client:
 
                         # Informamos por pantalla de que ese mensaje se ha entregado bien.
                         client._safe_print(f"c> SEND MESSAGE {message_id} OK")
+
+                    # Si el servidor nos manda ACK con fichero adjunto (Parte 2.1)...
+                    elif operation == "SEND MESS ATTACH ACK":
+                        # Leemos el identificador del mensaje.
+                        message_id = client._recv_string(conn)
+
+                        # Leemos el nombre del fichero (Parte 2.1).
+                        filename = client._recv_string(conn)
+
+                        # Informamos por pantalla (Parte 2.1).
+                        client._safe_print(f"c> SENDATTACH MESSAGE {message_id} {filename} OK")
+
+                    # Si nos piden descargar un fichero (Parte 2.1)...
+                    elif operation == "GET FILE":
+                        # Leemos quien lo solicita.
+                        requester = client._recv_string(conn)
+
+                        # Leemos el nombre del fichero solicitado.
+                        requested_file = client._recv_string(conn)
+
+                        try:
+                            # Verificar que el fichero existe.
+                            if not os.path.exists(requested_file):
+                                # Enviar tamaño 0 = error
+                                client._send_string(conn, "0")
+                            else:
+                                # Obtener tamaño del fichero.
+                                file_size = os.path.getsize(requested_file)
+
+                                # Enviar tamaño.
+                                client._send_string(conn, str(file_size))
+
+                                # Enviar contenido del fichero en chunks.
+                                with open(requested_file, 'rb') as f:
+                                    while True:
+                                        chunk = f.read(4096)
+                                        if not chunk:
+                                            break
+                                        conn.sendall(chunk)
+                        except Exception:
+                            # Si hay error, intentamos enviar 0.
+                            try:
+                                client._send_string(conn, "0")
+                            except Exception:
+                                pass
 
                 # Si ocurre cualquier error al procesar esa notificación...
                 except Exception:
@@ -484,14 +597,27 @@ class client:
                     # Convertimos ese texto a entero.
                     count = int(count_text)
 
-                    # Recibimos exactamente tantos nombres de usuario como indique count.
-                    users = [client._recv_string(sock) for _ in range(count)]
+                    # Recibimos exactamente tantos datos como indique count.
+                    users_info = []
+                    for _ in range(count):
+                        user_data = client._recv_string(sock)
+                        users_info.append(user_data)
+
+                        # Parseamos formato "usuario::IP::puerto" (Parte 2.1)
+                        parts = user_data.split("::")
+                        if len(parts) == 3:
+                            username = parts[0]
+                            ip = parts[1]
+                            port = int(parts[2])
+
+                            # Guardamos en cache (Parte 2.1)
+                            client._connected_users_cache[username] = (ip, port)
                 else:
                     # Si no fue bien, dejamos la cuenta a cero...
                     count = 0
 
                     # ...y la lista vacía.
-                    users = []
+                    users_info = []
 
         # Si algo falla al comunicar con el servidor...
         except Exception:
@@ -507,9 +633,15 @@ class client:
             client._safe_print(f"c> CONNECTED USERS ({count} users connected) OK")
 
             # Recorremos la lista de usuarios...
-            for user_name in users:
-                # ...y mostramos cada nombre en una línea.
-                client._safe_print(user_name)
+            for user_data in users_info:
+                # Parseamos "usuario::IP::puerto"
+                parts = user_data.split("::")
+                if len(parts) == 3:
+                    # Mostramos con formato completo (Parte 2.1)
+                    client._safe_print(f"{parts[0]} :: {parts[1]} :: {parts[2]}")
+                else:
+                    # Si no tiene formato, mostrar tal cual
+                    client._safe_print(user_data)
 
             # Devolvemos OK.
             return client.RC.OK
@@ -587,6 +719,9 @@ class client:
             client._safe_print("c> SEND FAIL")
             return client.RC.ERROR
 
+        # Normalizar mensaje si está disponible el servicio web (Parte 2.2)
+        message = client._normalize_message(message)
+
         # Comprobamos que el mensaje cumple el tamaño máximo del protocolo.
         if not client._message_fits_protocol(message):
             client._safe_print("c> SEND FAIL")
@@ -635,14 +770,137 @@ class client:
         client._safe_print("c> SEND FAIL")
         return client.RC.ERROR
 
-    # Método para SENDATTACH.
+    # Método para enviar un mensaje con fichero adjunto (Parte 2.1).
     @staticmethod
     def sendAttach(user, file_name, message):
-        # En la parte 1 esta operación todavía no se implementa.
-        client._safe_print("c> SENDATTACH FAIL")
+        # Si no hay usuario conectado, no se puede enviar ningún mensaje.
+        if client._current_user is None:
+            client._safe_print("c> SENDATTACH FAIL")
+            return client.RC.ERROR
 
-        # Devolvemos error general.
+        # Validar que el fichero existe (Parte 2.1).
+        if not os.path.exists(file_name):
+            client._safe_print("c> SENDATTACH FAIL")
+            return client.RC.ERROR
+
+        # Normalizar mensaje si está disponible el servicio web (Parte 2.2)
+        message = client._normalize_message(message)
+
+        # Comprobamos que el mensaje cumple el tamaño máximo del protocolo.
+        if not client._message_fits_protocol(message):
+            client._safe_print("c> SENDATTACH FAIL")
+            return client.RC.ERROR
+
+        try:
+            # Abrimos conexión con el servidor.
+            with client._connect_to_server() as sock:
+                # Enviamos la operación SENDATTACH (Parte 2.1).
+                client._send_string(sock, "SENDATTACH")
+
+                # Enviamos el nombre del remitente.
+                client._send_string(sock, client._current_user)
+
+                # Enviamos el nombre del destinatario.
+                client._send_string(sock, user)
+
+                # Enviamos el contenido del mensaje.
+                client._send_string(sock, message)
+
+                # Enviamos el nombre del fichero adjunto (Parte 2.1).
+                client._send_string(sock, file_name)
+
+                # Recibimos el código de respuesta del servidor.
+                code = client._recv_code(sock)
+
+                # Si el envío fue aceptado, el servidor también manda el ID del mensaje.
+                message_id = client._recv_string(sock) if code == 0 else None
+
+        # Si algo falla en la comunicación...
+        except Exception:
+            # ...mostramos error.
+            client._safe_print("c> SENDATTACH FAIL")
+
+            # Devolvemos error general.
+            return client.RC.ERROR
+
+        # Si el código es 0, el servidor aceptó el mensaje.
+        if code == 0:
+            client._safe_print(f"c> SENDATTACH OK - MESSAGE {message_id}")
+            return client.RC.OK
+
+        # Si el código es 1, el destinatario no existe.
+        if code == 1:
+            client._safe_print("c> SENDATTACH FAIL, USER DOES NOT EXIST")
+            return client.RC.USER_ERROR
+
+        # Cualquier otro caso es error general.
+        client._safe_print("c> SENDATTACH FAIL")
         return client.RC.ERROR
+
+    # Método para descargar fichero de otro usuario (Parte 2.1).
+    @staticmethod
+    def getFile(user, remote_filename, local_filename):
+        # Si no estamos conectados
+        if client._current_user is None:
+            client._safe_print("c> FILE TRANSFER FAILED, user not connected.")
+            return client.RC.ERROR
+
+        # Buscar en cache primero
+        if user not in client._connected_users_cache:
+            # Actualizar cache
+            client.users()
+
+        # Si sigue sin estar, user no conectado
+        if user not in client._connected_users_cache:
+            client._safe_print("c> FILE TRANSFER FAILED, user not connected.")
+            return client.RC.USER_ERROR
+
+        ip, port = client._connected_users_cache[user]
+
+        try:
+            # Conectar al listener del usuario remoto
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, port))
+            sock.settimeout(10.0)
+
+            # Protocolo: GET FILE (Parte 2.1)
+            client._send_string(sock, "GET FILE")
+            client._send_string(sock, client._current_user)  # Quien soy
+            client._send_string(sock, remote_filename)  # Fichero que quiero
+
+            # Recibir fichero en chunks
+            with open(local_filename, 'wb') as f:
+                # Primero recibimos el tamaño (como número en cadena)
+                size_text = client._recv_string(sock)
+                file_size = int(size_text)
+
+                # Si tamaño es 0, hubo error en el servidor
+                if file_size == 0:
+                    sock.close()
+                    client._safe_print("c> FILE TRANSFER FAILED, file not found.")
+                    return client.RC.ERROR
+
+                # Luego recibimos los datos
+                bytes_received = 0
+                while bytes_received < file_size:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bytes_received += len(chunk)
+
+            sock.close()
+
+            if bytes_received == file_size:
+                client._safe_print(f"c> FILE TRANSFER OK")
+                return client.RC.OK
+            else:
+                client._safe_print(f"c> FILE TRANSFER FAILED, incomplete.")
+                return client.RC.ERROR
+
+        except Exception as e:
+            client._safe_print(f"c> FILE TRANSFER FAILED, {str(e)}")
+            return client.RC.ERROR
 
     # Método que interpreta los comandos que escribe el usuario.
     @staticmethod
@@ -742,18 +1000,32 @@ class client:
                         # Si no, mostramos la sintaxis correcta.
                         print("Syntax error. Usage: SEND <userName> <message>")
 
-                # Si la operación es SENDATTACH...
+                # Si la operación es SENDATTACH (Parte 2.1)...
                 elif op == "SENDATTACH":
-                    # Dividimos la línea como mucho en cuatro partes.
+                    # Dividimos la línea como mucho en cuatro partes (Parte 2.1).
+                    # SENDATTACH <usuario> <fichero> <mensaje>
                     parts = stripped.split(maxsplit=3)
 
                     # Deben existir comando, usuario, nombre de fichero y mensaje.
                     if len(parts) == 4:
-                        # Llamamos a sendAttach.
+                        # Llamamos a sendAttach (Parte 2.1).
                         client.sendAttach(parts[1], parts[2], parts[3])
                     else:
                         # Si no, mostramos la ayuda.
-                        print("Syntax error. Usage: SENDATTACH <userName> <filename> <message>")
+                        print("Syntax error. Usage: SENDATTACH <userName> <fileName> <message>")
+
+                # Si la operación es GETFILE (Parte 2.1)...
+                elif op == "GETFILE":
+                    # GETFILE <usuario> <fichero_remoto> <fichero_local>
+                    parts = stripped.split()
+
+                    # Deben haber exactamente 4 partes.
+                    if len(parts) == 4:
+                        # Llamamos a getFile (Parte 2.1).
+                        client.getFile(parts[1], parts[2], parts[3])
+                    else:
+                        # Si no, mostramos la sintaxis (Parte 2.1).
+                        print("Syntax error. Usage: GETFILE <userName> <remoteFile> <localFile>")
 
                 # Si la operación es QUIT...
                 elif op == "QUIT":
